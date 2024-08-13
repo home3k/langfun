@@ -57,11 +57,13 @@ from langfun.core import memories
 
 from langfun.core import modalities
 
+Mime = modalities.Mime
+MimeType = Mime  # For backwards compatibility.
 Image = modalities.Image
 Video = modalities.Video
 PDF = modalities.PDF
 
-# Error types.
+# Additional error types.
 MappingError = structured.MappingError
 SchemaError = structured.SchemaError
 JsonError = structured.JsonError
@@ -73,4 +75,4 @@ CodeError = coding.CodeError
 # pylint: enable=g-import-not-at-top
 # pylint: enable=g-bad-import-order
 
-__version__ = "0.0.2"
+__version__ = "0.1.1"

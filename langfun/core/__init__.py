@@ -94,22 +94,39 @@ from langfun.core.message import MemoryRecord
 # Interface for modality.
 from langfun.core.modality import Modality
 from langfun.core.modality import ModalityRef
+from langfun.core.modality import ModalityError
 
 # Interfaces for languge models.
 from langfun.core.language_model import LanguageModel
 from langfun.core.language_model import LMSample
 from langfun.core.language_model import LMSamplingOptions
 from langfun.core.language_model import LMSamplingUsage
+from langfun.core.language_model import UsageNotAvailable
 from langfun.core.language_model import LMSamplingResult
 from langfun.core.language_model import LMScoringResult
 from langfun.core.language_model import LMCache
 from langfun.core.language_model import LMDebugMode
+
+from langfun.core.language_model import LMError
+from langfun.core.language_model import RetryableLMError
+from langfun.core.language_model import RateLimitError
+from langfun.core.language_model import TemporaryLMError
+
+# Context manager for tracking usages.
+from langfun.core.language_model import track_usages
 
 # Components for building agents.
 from langfun.core.memory import Memory
 
 # Utility for console output.
 from langfun.core import console
+
+# Helpers for implementing _repr_xxx_ methods.
+from langfun.core import repr_utils
+Html = repr_utils.Html
+
+# Utility for event logging.
+from langfun.core import logging
 
 # Import internal modules.
 

@@ -18,7 +18,6 @@ import collections
 import dataclasses
 import functools
 import hashlib
-import html
 import inspect
 import io
 import os
@@ -531,34 +530,16 @@ class Evaluable(lf.Component):
   def _render_message(self, message: lf.Message, s: io.StringIO) -> None:
     for m in message.trace():
       if 'lm-input' in m.tags:
-        text_color = 'green'
+        color = 'green'
       elif 'lm-response' in m.tags:
-        text_color = 'blue'
+        color = 'blue'
       else:
-        text_color = 'black'
+        continue
 
       s.write(
-          f'<div style="color: {text_color}; white-space: pre-wrap;'
-          'padding: 10px; border: 1px solid; margin-top: 10px">'
+          f'<div style="color: {color}; border: 1px solid; margin-top: 10px">'
       )
-      s.write(html.escape(m.get('formatted_text', m.text)))
-      if m.result is not None:
-        s.write(
-            '<div style="color: magenta; white-space: pre-wrap;'
-            'padding: 10px; border: 1px solid; margin: 10px">'
-        )
-        s.write(html.escape(pg.format(m.result)))
-        s.write('</div>')
-      if 'usage' in m.metadata and m.usage is not None:
-        s.write(
-            '<div style="background-color: #EEEEEE; color: black; '
-            'white-space: pre-wrap; padding: 10px; border: 0px solid; '
-            'margin: 10px">'
-            f'prompt: {m.usage.prompt_tokens} tokens, '
-            f'response: {m.usage.completion_tokens} tokens, '
-            f'total: {m.usage.total_tokens} tokens'
-            '</div>'
-        )
+      s.write(m._repr_html_())    # pylint: disable=protected-access
       s.write('</div>')
 
   @classmethod
@@ -1304,24 +1285,26 @@ class Evaluation(Evaluable):
     s = io.StringIO()
     definition = _html_repr(self, compact=False, escape=True)
     s.write('<div><table><tr><td>')
+    self._render_link(
+        s,
+        definition,
+        self.hash,
+        '',
+        lambda: self.link(self.dir),
+    )
     if self.result is None:
       s.write(
-          f'<a target="_blank" title="{definition}" '
-          f'href="{self.link(self.dir)}">{self.hash}</a>'
           '</td></tr><tr><td>'
           '<span style="color: gray">(IN-PROGRESS...)</span>'
       )
     else:
-      s.write(
-          f'<a target="_blank" title="{definition}" '
-          f'href="{self.index_link}">{self.hash}</a>'
-          f' &nbsp;[<a href="{self.link(self.dir)}">dir</a>]'
-          '</td></tr><tr><td>'
-      )
+      if self.dir:
+        s.write(f' &nbsp;[<a href="{self.link(self.dir)}">dir</a>]')
+      s.write('</td></tr><tr><td>')
       self._render_summary_metrics(s)
 
       # Summarize average usage.
-      if self.result.usage is not None:
+      if self.result.usage:
         self._render_summary_usage(s)
 
     s.write('</td></tr></table></div>')
@@ -1340,6 +1323,20 @@ class Evaluation(Evaluable):
         f'avg response: {usage.average_completion_tokens}'
         f'" style="color:gray">({total} tokens)</a>'
     )
+
+  def _render_link(self,
+                   s: io.StringIO,
+                   title: str,
+                   text: str,
+                   style: str,
+                   url_fn: Callable[[], str]) -> None:
+    """Renders a link in HTML."""
+    s.write(
+        f'<a target="_blank" title="{title}" style="{style}"'
+    )
+    if self.dir:
+      s.write(f' href="{url_fn()}"')
+    s.write(f'>{text}</a>')
 
   def _render_summary_metrics(self, s: io.StringIO) -> None:
     """Renders metrics in HTML."""
@@ -1362,14 +1359,12 @@ class Evaluation(Evaluable):
     extra_style = ''
     if m.oop_failure_rate > 0.1 and m.oop_failures > 3:
       extra_style = ';font-weight:bold'
-    s.write(
-        '<a title="%s" href="%s" style="color:magenta%s">%s</a>'
-        % (
-            oop_failure_title,
-            self.oop_failures_link,
-            extra_style,
-            self._format_rate(m.oop_failure_rate),
-        )
+    self._render_link(
+        s,
+        oop_failure_title,
+        self._format_rate(m.oop_failure_rate),
+        f'color:magenta{extra_style}',
+        lambda: self.oop_failures_link,
     )
     s.write(' | ')
 
@@ -1387,14 +1382,12 @@ class Evaluation(Evaluable):
           )
 
     extra_style = ';font-weight:bold' if m.non_oop_failures > 0 else ''
-    s.write(
-        '<a title="%s" href="%s" style="color:red%s">%s</a>'
-        % (
-            non_oop_failure_title,
-            self.non_oop_failures_link,
-            extra_style,
-            self._format_rate(m.non_oop_failure_rate),
-        )
+    self._render_link(
+        s,
+        non_oop_failure_title,
+        self._format_rate(m.non_oop_failure_rate),
+        f'color:red{extra_style}',
+        lambda: self.non_oop_failures_link,
     )
 
   def _format_rate(self, rate: float) -> str:
@@ -1441,9 +1434,10 @@ class Evaluation(Evaluable):
   def audit_usage(self, message: lf.Message, dryrun: bool = False) -> None:
     del dryrun
     for m in message.trace():
-      if m.metadata.get('usage', None) is not None:
-        self._total_prompt_tokens += m.usage.prompt_tokens
-        self._total_completion_tokens += m.usage.completion_tokens
+      usage = m.metadata.get('usage', None)
+      if usage:
+        self._total_prompt_tokens += usage.prompt_tokens
+        self._total_completion_tokens += usage.completion_tokens
         self._num_usages += 1
 
   def audit_processed(
@@ -1504,7 +1498,7 @@ class Evaluation(Evaluable):
         '<td>Schema</td>'
         '<td>Additional Args</td>'
     )
-    if self.result.usage is not None:
+    if self.result.usage:
       s.write('<td>Usage</td>')
     s.write('<td>OOP Failures</td>')
     s.write('<td>Non-OOP Failures</td>')
@@ -1533,7 +1527,7 @@ class Evaluation(Evaluable):
         f'{_html_repr(self.additional_args, compact=False)}</td>'
     )
     # Usage.
-    if self.result.usage is not None:
+    if self.result.usage:
       s.write('<td>')
       self._render_summary_usage(s)
       s.write('</td>')

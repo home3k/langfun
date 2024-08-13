@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Image tests."""
+import io
 import unittest
 from unittest import mock
 
+import langfun.core as lf
 from langfun.core.modalities import image as image_lib
+from langfun.core.modalities import mime as mime_lib
+import PIL.Image as pil_image
 import pyglove as pg
 
 
@@ -36,29 +40,62 @@ def mock_request(*args, **kwargs):
   return pg.Dict(content=image_content)
 
 
-class ImageContentTest(unittest.TestCase):
+class ImageTest(unittest.TestCase):
 
-  def test_image_content(self):
+  def test_from_bytes(self):
     image = image_lib.Image.from_bytes(image_content)
     self.assertEqual(image.image_format, 'png')
     self.assertIn('data:image/png;base64,', image._repr_html_())
     self.assertEqual(image.to_bytes(), image_content)
+    with self.assertRaisesRegex(
+        lf.ModalityError, '.* cannot be converted to text'
+    ):
+      image.to_text()
 
-  def test_bad_image(self):
+  def test_from_bytes_invalid(self):
     image = image_lib.Image.from_bytes(b'bad')
     with self.assertRaisesRegex(ValueError, 'Expected MIME type'):
       _ = image.image_format
 
+  def test_from_bytes_base_cls(self):
+    self.assertIsInstance(
+        mime_lib.Mime.from_bytes(image_content), image_lib.Image
+    )
 
-class ImageFileTest(unittest.TestCase):
-
-  def test_image_file(self):
+  def test_from_uri(self):
     image = image_lib.Image.from_uri('http://mock/web/a.png')
     with mock.patch('requests.get') as mock_requests_get:
       mock_requests_get.side_effect = mock_request
       self.assertEqual(image.image_format, 'png')
       self.assertEqual(image._repr_html_(), '<img src="http://mock/web/a.png">')
       self.assertEqual(image.to_bytes(), image_content)
+
+  def test_from_uri_base_cls(self):
+    with mock.patch('requests.get') as mock_requests_get:
+      mock_requests_get.side_effect = mock_request
+      image = mime_lib.Mime.from_uri('http://mock/web/a.png')
+      self.assertIsInstance(image, image_lib.Image)
+      self.assertEqual(image.image_format, 'png')
+      self.assertEqual(image._repr_html_(), '<img src="http://mock/web/a.png">')
+      self.assertEqual(image.to_bytes(), image_content)
+
+  def test_image_size(self):
+    image = image_lib.Image.from_uri('http://mock/web/a.png')
+    with mock.patch('requests.get') as mock_requests_get:
+      mock_requests_get.side_effect = mock_request
+      self.assertEqual(image.size, (24, 24))
+
+  def test_to_pil_image(self):
+    image = image_lib.Image.from_uri('http://mock/web/a.png')
+    with mock.patch('requests.get') as mock_requests_get:
+      mock_requests_get.side_effect = mock_request
+      self.assertIsInstance(image.to_pil_image(), pil_image.Image)
+
+  def test_from_pil_image(self):
+    image = pil_image.open(io.BytesIO(image_content))
+    self.assertIsInstance(
+        image_lib.Image.from_pil_image(image), image_lib.Image
+    )
 
 
 if __name__ == '__main__':

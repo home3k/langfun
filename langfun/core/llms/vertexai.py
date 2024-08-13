@@ -24,15 +24,20 @@ import pyglove as pg
 
 
 SUPPORTED_MODELS_AND_SETTINGS = {
-    'gemini-1.5-pro-preview-0514': pg.Dict(api='gemini', rpm=5),
-    'gemini-1.5-pro-preview-0409': pg.Dict(api='gemini', rpm=5),
-    'gemini-1.5-flash-preview-0514': pg.Dict(api='gemini', rpm=5),
+    'gemini-1.5-pro-001': pg.Dict(api='gemini', rpm=50),
+    'gemini-1.5-flash-001': pg.Dict(api='gemini', rpm=200),
+    'gemini-1.5-pro-preview-0514': pg.Dict(api='gemini', rpm=50),
+    'gemini-1.5-pro-preview-0409': pg.Dict(api='gemini', rpm=50),
+    'gemini-1.5-flash-preview-0514': pg.Dict(api='gemini', rpm=200),
     'gemini-1.0-pro': pg.Dict(api='gemini', rpm=300),
     'gemini-1.0-pro-vision': pg.Dict(api='gemini', rpm=100),
     # PaLM APIs.
     'text-bison': pg.Dict(api='palm', rpm=1600),
     'text-bison-32k': pg.Dict(api='palm', rpm=300),
     'text-unicorn': pg.Dict(api='palm', rpm=100),
+    # Endpoint
+    # TODO(chengrun): Set a more appropriate rpm for endpoint.
+    'custom': pg.Dict(api='endpoint', rpm=20),
 }
 
 
@@ -49,6 +54,11 @@ class VertexAI(lf.LanguageModel):
           'https://cloud.google.com/vertex-ai/generative-ai/docs/learn/models '
           'for details.'
       ),
+  ]
+
+  endpoint_name: pg.typing.Annotated[
+      str | None,
+      'Vertex Endpoint name or ID.',
   ]
 
   project: Annotated[
@@ -75,9 +85,10 @@ class VertexAI(lf.LanguageModel):
       ),
   ] = None
 
-  multimodal: Annotated[bool, 'Whether this model has multimodal support.'] = (
-      False
-  )
+  supported_modalities: Annotated[
+      list[str],
+      'A list of MIME types for supported modalities'
+  ] = []
 
   def _on_bound(self):
     super()._on_bound()
@@ -124,16 +135,34 @@ class VertexAI(lf.LanguageModel):
     )
 
   def _generation_config(
-      self, options: lf.LMSamplingOptions
+      self, prompt: lf.Message, options: lf.LMSamplingOptions
   ) -> Any:  # generative_models.GenerationConfig
     """Creates generation config from langfun sampling options."""
     from vertexai import generative_models
+    # Users could use `metadata_json_schema` to pass additional
+    # request arguments.
+    json_schema = prompt.metadata.get('json_schema')
+    response_mime_type = None
+    if json_schema is not None:
+      if not isinstance(json_schema, dict):
+        raise ValueError(
+            f'`json_schema` must be a dict, got {json_schema!r}.'
+        )
+      response_mime_type = 'application/json'
+      prompt.metadata.formatted_text = (
+          prompt.text
+          + '\n\n [RESPONSE FORMAT (not part of prompt)]\n'
+          + pg.to_json_str(json_schema, json_indent=2)
+      )
+
     return generative_models.GenerationConfig(
         temperature=options.temperature,
         top_p=options.top_p,
         top_k=options.top_k,
         max_output_tokens=options.max_tokens,
         stop_sequences=options.stop,
+        response_mime_type=response_mime_type,
+        response_schema=json_schema,
     )
 
   def _content_from_message(
@@ -142,16 +171,29 @@ class VertexAI(lf.LanguageModel):
     """Gets generation input from langfun message."""
     from vertexai import generative_models
     chunks = []
+
     for lf_chunk in prompt.chunk():
       if isinstance(lf_chunk, str):
-        chunk = lf_chunk
-      elif self.multimodal and isinstance(lf_chunk, lf_modalities.MimeType):
-        chunk = generative_models.Part.from_data(
-            lf_chunk.to_bytes(), lf_chunk.mime_type
-        )
+        chunks.append(lf_chunk)
+      elif isinstance(lf_chunk, lf_modalities.Mime):
+        try:
+          modalities = lf_chunk.make_compatible(
+              self.supported_modalities + ['text/plain']
+          )
+          if isinstance(modalities, lf_modalities.Mime):
+            modalities = [modalities]
+          for modality in modalities:
+            if modality.is_text:
+              chunk = modality.to_text()
+            else:
+              chunk = generative_models.Part.from_data(
+                  modality.to_bytes(), modality.mime_type
+              )
+            chunks.append(chunk)
+        except lf.ModalityError as e:
+          raise lf.ModalityError(f'Unsupported modality: {lf_chunk!r}') from e
       else:
-        raise ValueError(f'Unsupported modality: {lf_chunk!r}')
-      chunks.append(chunk)
+        raise lf.ModalityError(f'Unsupported modality: {lf_chunk!r}')
     return chunks
 
   def _generation_response_to_message(
@@ -161,11 +203,28 @@ class VertexAI(lf.LanguageModel):
     """Parses generative response into message."""
     return lf.AIMessage(response.text)
 
+  def _generation_endpoint_response_to_message(
+      self,
+      response: Any,  # google.cloud.aiplatform.aiplatform.models.Prediction
+  ) -> lf.Message:
+    """Parses Endpoint response into message."""
+    return lf.AIMessage(response.predictions[0])
+
   def _sample(self, prompts: list[lf.Message]) -> list[lf.LMSamplingResult]:
     assert self._api_initialized, 'Vertex AI API is not initialized.'
     # TODO(yifenglu): It seems this exception is due to the instability of the
     # API. We should revisit this later.
-    retry_on_errors = [(Exception, 'InternalServerError')]
+    retry_on_errors = [
+        (Exception, 'InternalServerError'),
+        (
+            Exception,
+            (
+                'ValueError: Response candidate content has no parts (and thus'
+                ' no text).'
+            ),
+        ),
+        (Exception, 'ValueError: Cannot get the Candidate text.'),
+    ]
 
     return lf.concurrent_execute(
         self._sample_single,
@@ -186,6 +245,8 @@ class VertexAI(lf.LanguageModel):
         return self._sample_generative_model(prompt)
       case 'palm':
         return self._sample_text_generation_model(prompt)
+      case 'endpoint':
+        return self._sample_endpoint_model(prompt)
       case _:
         raise ValueError(f'Unsupported API: {api}')
 
@@ -195,7 +256,9 @@ class VertexAI(lf.LanguageModel):
     input_content = self._content_from_message(prompt)
     response = model.generate_content(
         input_content,
-        generation_config=self._generation_config(self.sampling_options),
+        generation_config=self._generation_config(
+            prompt, self.sampling_options
+        ),
     )
     usage_metadata = response.usage_metadata
     usage = lf.LMSamplingUsage(
@@ -229,6 +292,35 @@ class VertexAI(lf.LanguageModel):
     return lf.LMSamplingResult([
         # Scoring is not supported.
         lf.LMSample(lf.AIMessage(response.text), score=0.0)
+    ])
+
+  def _sample_endpoint_model(self, prompt: lf.Message) -> lf.LMSamplingResult:
+    """Samples a text generation model."""
+    from google.cloud.aiplatform import models
+    model = models.Endpoint(self.endpoint_name)
+    # TODO(chengrun): Add support for stop_sequences.
+    predict_options = dict(
+        temperature=self.sampling_options.temperature
+        if self.sampling_options.temperature is not None
+        else 1.0,
+        top_k=self.sampling_options.top_k
+        if self.sampling_options.top_k is not None
+        else 32,
+        top_p=self.sampling_options.top_p
+        if self.sampling_options.top_p is not None
+        else 1,
+        max_tokens=self.sampling_options.max_tokens
+        if self.sampling_options.max_tokens is not None
+        else 8192,
+    )
+    instances = [{'prompt': prompt.text, **predict_options}]
+    response = model.predict(instances=instances)
+
+    return lf.LMSamplingResult([
+        # Scoring is not supported.
+        lf.LMSample(
+            self._generation_endpoint_response_to_message(response), score=0.0
+        )
     ])
 
 
@@ -265,25 +357,77 @@ class _ModelHub:
 _VERTEXAI_MODEL_HUB = _ModelHub()
 
 
+_IMAGE_TYPES = [
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'image/heic',
+    'image/heif',
+]
+
+_AUDIO_TYPES = [
+    'audio/aac',
+    'audio/flac',
+    'audio/mp3',
+    'audio/m4a',
+    'audio/mpeg',
+    'audio/mpga',
+    'audio/mp4',
+    'audio/opus',
+    'audio/pcm',
+    'audio/wav',
+    'audio/webm'
+]
+
+_VIDEO_TYPES = [
+    'video/mov',
+    'video/mpeg',
+    'video/mpegps',
+    'video/mpg',
+    'video/mp4',
+    'video/webm',
+    'video/wmv',
+    'video/x-flv',
+    'video/3gpp',
+]
+
+_PDF = [
+    'application/pdf',
+]
+
+
 class VertexAIGeminiPro1_5(VertexAI):  # pylint: disable=invalid-name
   """Vertex AI Gemini 1.5 Pro model."""
 
+  model = 'gemini-1.5-pro-001'
+  supported_modalities = _PDF + _IMAGE_TYPES + _AUDIO_TYPES + _VIDEO_TYPES
+
+
+class VertexAIGeminiPro1_5_0514(VertexAI):  # pylint: disable=invalid-name
+  """Vertex AI Gemini 1.5 Pro preview model."""
+
   model = 'gemini-1.5-pro-preview-0514'
-  multimodal = True
+  supported_modalities = _PDF + _IMAGE_TYPES + _AUDIO_TYPES + _VIDEO_TYPES
 
 
 class VertexAIGeminiPro1_5_0409(VertexAI):  # pylint: disable=invalid-name
-  """Vertex AI Gemini 1.5 Pro model."""
+  """Vertex AI Gemini 1.5 Pro preview model."""
 
   model = 'gemini-1.5-pro-preview-0409'
-  multimodal = True
+  supported_modalities = _PDF + _IMAGE_TYPES + _AUDIO_TYPES + _VIDEO_TYPES
 
 
 class VertexAIGeminiFlash1_5(VertexAI):  # pylint: disable=invalid-name
   """Vertex AI Gemini 1.5 Flash model."""
+  model = 'gemini-1.5-flash-001'
+  supported_modalities = _PDF + _IMAGE_TYPES + _AUDIO_TYPES + _VIDEO_TYPES
+
+
+class VertexAIGeminiFlash1_5_0514(VertexAI):  # pylint: disable=invalid-name
+  """Vertex AI Gemini 1.5 Flash preview model."""
 
   model = 'gemini-1.5-flash-preview-0514'
-  multimodal = True
+  supported_modalities = _PDF + _IMAGE_TYPES + _AUDIO_TYPES + _VIDEO_TYPES
 
 
 class VertexAIGeminiPro1(VertexAI):  # pylint: disable=invalid-name
@@ -296,7 +440,7 @@ class VertexAIGeminiPro1Vision(VertexAI):  # pylint: disable=invalid-name
   """Vertex AI Gemini 1.0 Pro model."""
 
   model = 'gemini-1.0-pro-vision'
-  multimodal = True
+  supported_modalities = _IMAGE_TYPES + _VIDEO_TYPES
 
 
 class VertexAIPalm2(VertexAI):  # pylint: disable=invalid-name
@@ -309,3 +453,9 @@ class VertexAIPalm2_32K(VertexAI):  # pylint: disable=invalid-name
   """Vertex AI PaLM2 text generation model (32K context length)."""
 
   model = 'text-bison-32k'
+
+
+class VertexAICustom(VertexAI):  # pylint: disable=invalid-name
+  """Vertex AI Custom model (Endpoint)."""
+
+  model = 'custom'

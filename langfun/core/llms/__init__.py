@@ -24,8 +24,12 @@ from langfun.core.llms.fake import StaticMapping
 from langfun.core.llms.fake import StaticResponse
 from langfun.core.llms.fake import StaticSequence
 
+# REST-based models.
+from langfun.core.llms.rest import REST
+
 # Gemini models.
 from langfun.core.llms.google_genai import GenAI
+from langfun.core.llms.google_genai import GeminiFlash1_5
 from langfun.core.llms.google_genai import GeminiPro
 from langfun.core.llms.google_genai import GeminiPro1_5
 from langfun.core.llms.google_genai import GeminiProVision
@@ -35,6 +39,8 @@ from langfun.core.llms.google_genai import Palm2_IT
 # OpenAI models.
 from langfun.core.llms.openai import OpenAI
 
+from langfun.core.llms.openai import Gpt4oMini
+from langfun.core.llms.openai import Gpt4oMini_20240718
 from langfun.core.llms.openai import Gpt4o
 from langfun.core.llms.openai import Gpt4o_20240513
 
@@ -77,6 +83,7 @@ from langfun.core.llms.openai import Gpt3Babbage
 from langfun.core.llms.openai import Gpt3Ada
 
 from langfun.core.llms.anthropic import Anthropic
+from langfun.core.llms.anthropic import Claude35Sonnet
 from langfun.core.llms.anthropic import Claude3Opus
 from langfun.core.llms.anthropic import Claude3Sonnet
 from langfun.core.llms.anthropic import Claude3Haiku
@@ -90,12 +97,15 @@ from langfun.core.llms.groq import GroqGemma7B_IT
 
 from langfun.core.llms.vertexai import VertexAI
 from langfun.core.llms.vertexai import VertexAIGeminiPro1_5
+from langfun.core.llms.vertexai import VertexAIGeminiPro1_5_0514
 from langfun.core.llms.vertexai import VertexAIGeminiPro1_5_0409
 from langfun.core.llms.vertexai import VertexAIGeminiFlash1_5
+from langfun.core.llms.vertexai import VertexAIGeminiFlash1_5_0514
 from langfun.core.llms.vertexai import VertexAIGeminiPro1
 from langfun.core.llms.vertexai import VertexAIGeminiPro1Vision
 from langfun.core.llms.vertexai import VertexAIPalm2
 from langfun.core.llms.vertexai import VertexAIPalm2_32K
+from langfun.core.llms.vertexai import VertexAICustom
 
 
 # LLaMA C++ models.

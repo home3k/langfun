@@ -14,14 +14,13 @@
 """Language models from Anthropic."""
 
 import base64
-import functools
 import os
 from typing import Annotated, Any
 
 import langfun.core as lf
 from langfun.core import modalities as lf_modalities
+from langfun.core.llms import rest
 import pyglove as pg
-import requests
 
 
 SUPPORTED_MODELS_AND_SETTINGS = {
@@ -29,6 +28,9 @@ SUPPORTED_MODELS_AND_SETTINGS = {
     # Rate limits from https://docs.anthropic.com/claude/reference/rate-limits
     #     RPM/TPM for Claude-2.1, Claude-2.0, and Claude-Instant-1.2 estimated
     #     as RPM/TPM of the largest-available model (Claude-3-Opus).
+    'claude-3-5-sonnet-20240620': pg.Dict(
+        max_tokens=4096, rpm=4000, tpm=400000
+    ),
     'claude-3-opus-20240229': pg.Dict(max_tokens=4096, rpm=4000, tpm=400000),
     'claude-3-sonnet-20240229': pg.Dict(max_tokens=4096, rpm=4000, tpm=400000),
     'claude-3-haiku-20240307': pg.Dict(max_tokens=4096, rpm=4000, tpm=400000),
@@ -38,24 +40,8 @@ SUPPORTED_MODELS_AND_SETTINGS = {
 }
 
 
-class AnthropicError(Exception):  # pylint: disable=g-bad-exception-name
-  """Base class for Anthropic errors."""
-
-
-class RateLimitError(AnthropicError):
-  """Error for rate limit reached."""
-
-
-class OverloadedError(AnthropicError):
-  """Anthropic's server is temporarily overloaded."""
-
-
-_ANTHROPIC_MESSAGE_API_ENDPOINT = 'https://api.anthropic.com/v1/messages'
-_ANTHROPIC_API_VERSION = '2023-06-01'
-
-
 @lf.use_init_args(['model'])
-class Anthropic(lf.LanguageModel):
+class Anthropic(rest.REST):
   """Anthropic LLMs (Claude) through REST APIs.
 
   See https://docs.anthropic.com/claude/reference/messages_post
@@ -80,14 +66,18 @@ class Anthropic(lf.LanguageModel):
       ),
   ] = None
 
+  api_endpoint: str = 'https://api.anthropic.com/v1/messages'
+
+  api_version: Annotated[
+      str,
+      'Anthropic API version.'
+  ] = '2023-06-01'
+
   def _on_bound(self):
     super()._on_bound()
     self._api_key = None
-    self.__dict__.pop('_api_initialized', None)
-    self.__dict__.pop('_session', None)
 
-  @functools.cached_property
-  def _api_initialized(self):
+  def _initialize(self):
     api_key = self.api_key or os.environ.get('ANTHROPIC_API_KEY', None)
     if not api_key:
       raise ValueError(
@@ -95,18 +85,14 @@ class Anthropic(lf.LanguageModel):
           'variable `ANTHROPIC_API_KEY` with your Anthropic API key.'
       )
     self._api_key = api_key
-    return True
 
-  @functools.cached_property
-  def _session(self) -> requests.Session:
-    assert self._api_initialized
-    s = requests.Session()
-    s.headers.update({
+  @property
+  def headers(self) -> dict[str, Any]:
+    return {
         'x-api-key': self._api_key,
-        'anthropic-version': _ANTHROPIC_API_VERSION,
+        'anthropic-version': self.api_version,
         'content-type': 'application/json',
-    })
-    return s
+    }
 
   @property
   def model_id(self) -> str:
@@ -121,13 +107,24 @@ class Anthropic(lf.LanguageModel):
         requests_per_min=rpm, tokens_per_min=tpm
     )
 
-  def _sample(self, prompts: list[lf.Message]) -> list[lf.LMSamplingResult]:
-    assert self._api_initialized
-    return self._parallel_execute_with_currency_control(
-        self._sample_single, prompts, retry_on_errors=(RateLimitError)
+  def request(
+      self,
+      prompt: lf.Message,
+      sampling_options: lf.LMSamplingOptions
+  ) -> dict[str, Any]:
+    """Returns the JSON input for a message."""
+    request = dict()
+    request.update(self._request_args(sampling_options))
+    request.update(
+        dict(
+            messages=[
+                dict(role='user', content=self._content_from_message(prompt))
+            ]
+        )
     )
+    return request
 
-  def _get_request_args(self, options: lf.LMSamplingOptions) -> dict[str, Any]:
+  def _request_args(self, options: lf.LMSamplingOptions) -> dict[str, Any]:
     """Returns a dict as request arguments."""
     # Authropic requires `max_tokens` to be specified.
     max_tokens = (
@@ -174,6 +171,19 @@ class Anthropic(lf.LanguageModel):
     else:
       return [dict(type='text', text=prompt.text)]
 
+  def result(self, json: dict[str, Any]) -> lf.LMSamplingResult:
+    message = self._message_from_content(json['content'])
+    input_tokens = json['usage']['input_tokens']
+    output_tokens = json['usage']['output_tokens']
+    return lf.LMSamplingResult(
+        [lf.LMSample(message)],
+        usage=lf.LMSamplingUsage(
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+        ),
+    )
+
   def _message_from_content(self, content: list[dict[str, Any]]) -> lf.Message:
     """Converts Anthropic's content protocol to message."""
     # Refer: https://docs.anthropic.com/claude/reference/messages-examples
@@ -181,53 +191,16 @@ class Anthropic(lf.LanguageModel):
         [x['text'] for x in content if x['type'] == 'text']
     )
 
-  def _parse_response(self, response: requests.Response) -> lf.LMSamplingResult:
-    """Parses Anthropic's response."""
-    # NOTE(daiyip): Refer https://docs.anthropic.com/claude/reference/errors
-    if response.status_code == 200:
-      output = response.json()
-      message = self._message_from_content(output['content'])
-      input_tokens = output['usage']['input_tokens']
-      output_tokens = output['usage']['output_tokens']
-      return lf.LMSamplingResult(
-          [lf.LMSample(message)],
-          usage=lf.LMSamplingUsage(
-              prompt_tokens=input_tokens,
-              completion_tokens=output_tokens,
-              total_tokens=input_tokens + output_tokens,
-          ),
-      )
-    else:
-      if response.status_code == 429:
-        error_cls = RateLimitError
-      elif response.status_code in (502, 529):
-        error_cls = OverloadedError
-      else:
-        error_cls = AnthropicError
-      raise error_cls(f'{response.status_code}: {response.content}')
-
-  def _sample_single(self, prompt: lf.Message) -> lf.LMSamplingResult:
-    request = dict()
-    request.update(self._get_request_args(self.sampling_options))
-    request.update(
-        dict(
-            messages=[
-                dict(role='user', content=self._content_from_message(prompt))
-            ]
-        )
-    )
-    try:
-      response = self._session.post(
-          _ANTHROPIC_MESSAGE_API_ENDPOINT, json=request, timeout=self.timeout,
-      )
-      return self._parse_response(response)
-    except ConnectionError as e:
-      raise OverloadedError(str(e)) from e
-
 
 class Claude3(Anthropic):
   """Base class for Claude 3 models. 200K input tokens and 4K output tokens."""
   multimodal = True
+
+
+class Claude35Sonnet(Claude3):
+  """A balance between between Opus and Haiku."""
+
+  model = 'claude-3-5-sonnet-20240620'
 
 
 class Claude3Opus(Claude3):

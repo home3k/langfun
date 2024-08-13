@@ -172,14 +172,12 @@ class Scoring(base.Evaluation):
     """Renders metrics in HTML."""
     assert self.result is not None
     m = self.result.metrics
-    s.write(
-        '<a title="Average score (%d/%d)" href="%s" style="color:green">%s</a>'
-        % (
-            m.num_scored,
-            m.total,
-            self.scored_link,
-            '%.2f%%' % (m.score_rate * 100),
-        )
+    self._render_link(
+        s,
+        'Average score (%d/%d)' % (m.num_scored, m.total),
+        '%.2f (%.2f%%)' % (m.avg_score, m.score_rate * 100),
+        'color:green',
+        lambda: self.scored_link,
     )
     s.write(' | ')
     super()._render_summary_metrics(s)
@@ -198,9 +196,9 @@ class Scoring(base.Evaluation):
     for i, (example, output, score, message) in enumerate(self.scored):
       bgcolor = 'white' if i % 2 == 0 else '#DDDDDD'
       s.write(f'<tr style="background-color: {bgcolor}"><td>{i + 1}</td>')
-      input_str = pg.format(example, verbose=False)
+      input_str = pg.format(example, verbose=False, max_bytes_len=32)
       s.write(f'<td style="color:green;white-space:pre-wrap">{input_str}</td>')
-      output_str = pg.format(output, verbose=False)
+      output_str = pg.format(output, verbose=False, max_bytes_len=32)
       s.write(f'<td style="color:blue;white-space:pre-wrap">{output_str}</td>')
       s.write(f'<td style="color:magenta;white-space:pre-wrap">{score}</td>')
       s.write('<td>')

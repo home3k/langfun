@@ -239,24 +239,20 @@ class Matching(base.Evaluation):
     """Renders metrics in HTML."""
     assert self.result is not None
     m = self.result.metrics
-    s.write(
-        '<a title="Matches (%d/%d)" href="%s" style="color:green">%s</a>'
-        % (
-            m.num_matches,
-            m.total,
-            self.matches_link,
-            self._format_rate(m.match_rate),
-        )
+    self._render_link(
+        s,
+        'Matches (%d/%d)' % (m.num_matches, m.total),
+        self._format_rate(m.match_rate),
+        'color:green',
+        lambda: self.matches_link,
     )
     s.write(' | ')
-    s.write(
-        '<a title="Mismatches (%d/%d)" href="%s" style="color:orange">%s</a>'
-        % (
-            m.num_mismatches,
-            m.total,
-            self.mismatches_link,
-            self._format_rate(m.mismatch_rate),
-        )
+    self._render_link(
+        s,
+        'Mismatches (%d/%d)' % (m.num_mismatches, m.total),
+        self._format_rate(m.mismatch_rate),
+        'color:orange',
+        lambda: self.mismatches_link,
     )
     s.write(' | ')
     super()._render_summary_metrics(s)
@@ -275,9 +271,9 @@ class Matching(base.Evaluation):
     for i, (example, output, message) in enumerate(self.matches):
       bgcolor = 'white' if i % 2 == 0 else '#DDDDDD'
       s.write(f'<tr style="background-color: {bgcolor}"><td>{i + 1}</td>')
-      input_str = pg.format(example, verbose=False)
+      input_str = pg.format(example, verbose=False, max_bytes_len=32)
       s.write(f'<td style="color:green;white-space:pre-wrap">{input_str}</td>')
-      output_str = pg.format(output, verbose=False)
+      output_str = pg.format(output, verbose=False, max_bytes_len=32)
       s.write(f'<td style="color:blue;white-space:pre-wrap">{output_str}</td>')
       s.write('<td>')
       self._render_message(message, s)
@@ -300,9 +296,9 @@ class Matching(base.Evaluation):
     for i, (example, output, message) in enumerate(self.mismatches):
       bgcolor = 'white' if i % 2 == 0 else '#DDDDDD'
       s.write(f'<tr style="background-color: {bgcolor}"><td>{i + 1}</td>')
-      input_str = pg.format(example, verbose=False)
+      input_str = pg.format(example, verbose=False, max_bytes_len=32)
       s.write(f'<td style="color:green;white-space:pre-wrap">{input_str}</td>')
-      output_str = pg.format(output, verbose=False)
+      output_str = pg.format(output, verbose=False, max_bytes_len=32)
       s.write(
           f'<td style="color:magenta;white-space:pre-wrap">{output_str}</td>'
       )
